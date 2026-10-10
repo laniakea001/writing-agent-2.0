@@ -1,0 +1,6 @@
+import {MainAssistant} from './MainAssistant';
+import {RunTaskCenter} from './RunTaskCenter';
+export type RightMode='CHAT'|'TASKS'|'TASK_DETAIL'|'CLOSED';
+export function WorkbenchRightPanel({mode,setMode,taskId,onTask,workspace,project,ensureWorkspace,onSaved}:{mode:RightMode;setMode:(mode:RightMode)=>void;taskId:string;onTask:(id:string)=>void;workspace:string;project:string;ensureWorkspace:()=>Promise<string>;onSaved:(project:string)=>Promise<void>}){
+ return <div className="assistant-slot right-panel" hidden={mode==='CLOSED'} aria-label="写作助手与任务面板"><div className="right-panel-tabs"><button className={mode==='CHAT'?'active':''} onClick={()=>setMode('CHAT')}>助手会话</button><button className={mode==='TASKS'||mode==='TASK_DETAIL'?'active':''} onClick={()=>setMode('TASKS')}>任务中心</button><button aria-label="关闭右侧面板" onClick={()=>setMode('CLOSED')}>×</button></div><div className="right-panel-view" hidden={mode!=='CHAT'}><MainAssistant workspace={workspace} project={project} ensureWorkspace={ensureWorkspace} onSaved={onSaved} onTask={onTask}/></div>{(mode==='TASKS'||mode==='TASK_DETAIL')&&<RunTaskCenter workspace={workspace} selectedId={mode==='TASK_DETAIL'?taskId:''} onSelect={onTask} onBack={()=>setMode('TASKS')} onSaved={onSaved}/>}</div>;
+}

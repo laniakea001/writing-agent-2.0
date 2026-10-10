@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    username: ${WRITING_TEST_DB_USER:writing_app}
+    password: ${WRITING_TEST_DB_PASSWORD:}
+    hikari:
+      maximum-pool-size: 2
+      minimum-idle: 0
+  flyway:
+    clean-disabled: true
+writing:
+  batch:
+    dispatch-enabled: false
+logging:
+  level:
+    root: WARN

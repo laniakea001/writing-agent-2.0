@@ -1,0 +1,10 @@
+import type { JSONContent } from '@tiptap/react';
+export type JsonDoc=JSONContent & {type:'doc'};
+export type PlanChapter={chapterKey?:string|null;title:string;brief?:string};
+export type PlanPayload={researchQuestion?:string;goals?:string;scope?:string;methodSuggestion?:string;expectedDeliverables?:string;risksOrAssumptions?:string[];chapters:PlanChapter[]};
+export type Project={projectId:string;workspaceId:string;title:string;projectVersion:number;currentPlanRevisionId:string|null;currentArticleId:string|null};
+export type Plan={planRevisionId:string;revisionNo:number;status:'DRAFT'|'CONFIRMED';payload:PlanPayload};
+export type Chapter={chapterKey:string;chapterIndex:number;title:string;brief:string;chapterRevisionId:string|null;revisionNo:number;contentJson:JsonDoc;bodyMarkdown:string;documentHash:string|null};
+export type Article={articleId:string;planRevisionId:string;articleVersion:number;status:'DRAFTING'|'PARTIAL'|'READY_FOR_COMPLETE'|'COMPLETE';chapters:Chapter[];metadata:{abstract:string;keywords:string[]};currentMetadataRevisionId:string|null};
+export type Proposal={proposalId:string;workspaceId:string;projectId:string;type:'CONFIRM_PLAN'|'COMPLETE_ARTICLE'|'REOPEN_ARTICLE';status:string;expectedProjectVersion:number;expectedArticleVersion:number|null;displaySummary:string;allowedDecisions?:string[];disabledReasonText?:string;receipt?:unknown};
+export type Workbench={project:Project;plan:Plan|null;article:Article|null};

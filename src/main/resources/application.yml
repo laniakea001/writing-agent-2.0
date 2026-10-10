@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: writing-agent-2.0
+  datasource:
+    url: ${WRITING_V2_DB_URL:jdbc:postgresql://127.0.0.1:5432/writing_agent?currentSchema=writing_v2}
+    username: ${WRITING_V2_DB_USER:writing_app}
+    password: ${WRITING_V2_DB_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    clean-disabled: true
+    schemas: writing_v2
+    default-schema: writing_v2
+    create-schemas: true
+    locations: classpath:db/migration
+server:
+  address: ${WRITING_V2_ADDRESS:127.0.0.1}
+  port: ${WRITING_V2_PORT:8088}
+
+wa2:
+  agent-state-dir: ${WA2_AGENT_STATE_DIR:runtime/agent-state}
+
+writing:
+  batch:
+    dispatch-enabled: ${WRITING_BATCH_DISPATCH_ENABLED:true}
+    dispatch-project-id: ${WRITING_BATCH_DISPATCH_PROJECT_ID:}
+
+logging:
+  level:
+    root: INFO
+    com.writingagent: INFO

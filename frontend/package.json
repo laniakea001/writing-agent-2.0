@@ -1,0 +1,12 @@
+{
+  "name": "writing-agent-workbench",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {"dev": "vite --host 127.0.0.1 --port 5188", "build": "tsc --noEmit && vite build", "build:server": "npm run build && node scripts/package-server.mjs", "test": "node --test tests/*.test.mjs src/*.test.mjs"},
+  "dependencies": {
+    "react": "19.2.8", "react-dom": "19.2.8",
+    "@tiptap/react": "3.15.3", "@tiptap/starter-kit": "3.15.3", "@tiptap/extension-table": "3.15.3"
+  },
+  "devDependencies": {"vite": "8.2.2", "@vitejs/plugin-react": "6.1.1", "typescript": "5.9.3", "@types/react": "19.2.5", "@types/react-dom": "19.2.3"}
+}

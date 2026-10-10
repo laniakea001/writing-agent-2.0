@@ -1,0 +1,39 @@
+# Build output and installed dependencies
+/target/
+/frontend/node_modules/
+/frontend/dist/
+/src/main/resources/static/workbench/
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+application-local.*
+application-secrets.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Agent sessions, private articles, runtime logs and database snapshots
+/.agentscope/
+/runtime/
+/data/
+/evidence/
+*.log
+*.jsonl
+*.dump
+*.hprof
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.iml
+.classpath
+.project
+.settings/
+.DS_Store
+Thumbs.db
+
+# Release-only local inspection files
+/.release-check/

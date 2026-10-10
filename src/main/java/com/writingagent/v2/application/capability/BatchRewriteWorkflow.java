@@ -42,6 +42,7 @@ public class BatchRewriteWorkflow {
    if(!documents.plan(a.planId()).map(plan->"CONFIRMED".equals(plan.status())).orElse(false)||!a.planId().equals(p.planId()))throw error(409,"PLAN_NOT_CONFIRMED");
    var chapters=documents.chapters(a.id());var selected=chapters.stream().filter(c->keys.contains(c.key())).sorted(Comparator.comparingInt(WritingDocumentPort.Chapter::index)).toList();
    if(selected.size()!=keys.size())throw error(404,"CHAPTER_NOT_FOUND");
+   com.writingagent.v2.domain.ChapterInstructionContract.requireTargets(request.instruction(),selected.stream().map(WritingDocumentPort.Chapter::index).toList(),true);
    // Preserve the whole article snapshot: unrelated manual changes must not silently rebase this batch.
    var manifest=writing.rewriteManifest(project);
    var items=new ArrayList<Item>();int ordinal=0;for(var c:selected)items.add(new Item(UUID.randomUUID(),++ordinal,c.key(),c.index(),c.revisionId(),ItemStatus.PENDING,null,null));

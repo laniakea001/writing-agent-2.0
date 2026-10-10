@@ -35,6 +35,11 @@ class ChapterRewriteConfirmationTest {
  }
  private static com.fasterxml.jackson.databind.JsonNode doc(String text){var d=JSON.createObjectNode().put("type","doc");d.putArray("content").addObject().put("type","paragraph").putArray("content").addObject().put("type","text").put("text",text);return d;}
  private Map<String,Object> candidate(Fixture f,String key){var state=writing.workbench(f.project());var a=(Map<String,Object>)state.get("article");var ch=writing.chapter(f.project(),f.chapter());return writing.prepareChapterCandidate(f.project(),key,f.chapter(),(UUID)a.get("planRevisionId"),(UUID)ch.get("chapterRevisionId"),((Number)a.get("articleVersion")).longValue(),doc("新正文 xxs"),"约100字，结尾xxs",null,null);}
+ @Test void missingLiteralSuffixCannotBecomeAnApprovableCandidate(){
+  var f=fixture();var a=writing.article(f.project());var ch=writing.chapter(f.project(),f.chapter());
+  var error=assertThrows(WritingRuleException.class,()->writing.prepareChapterCandidate(f.project(),"missing-suffix",f.chapter(),(UUID)a.get("planRevisionId"),(UUID)ch.get("chapterRevisionId"),((Number)a.get("articleVersion")).longValue(),doc("新正文没有标记"),"修改第1章，结尾添加@#003",null,null));
+  assertEquals("REWRITE_REQUIREMENT_NOT_MET",error.code());assertEquals(ch,writing.chapter(f.project(),f.chapter()));
+ }
  @Test void candidateDoesNotChangeTheChapterUntilApprovedAndReplayCannotWriteTwice(){
   var f=fixture();var before=writing.chapter(f.project(),f.chapter());var other=writing.chapter(f.project(),f.other());var card=candidate(f,"candidate");
   assertEquals("CONFIRM_CHAPTER",card.get("type"));assertEquals(before,writing.chapter(f.project(),f.chapter()));

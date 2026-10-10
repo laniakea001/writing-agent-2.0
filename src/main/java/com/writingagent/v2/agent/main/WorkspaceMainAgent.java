@@ -35,6 +35,7 @@ public class WorkspaceMainAgent {
   add(toolkit,tools,"update_article_metadata","保存文章的中文摘要与关键词；payload含abstract字符串和keywords字符串数组，已完成文章不可修改",Map.of("payload",Map.of("type","object")));
   add(toolkit,tools,"draft_writing_chapter","生成指定的空白章节并保存；已有正文请用重写工具",Map.of("chapterIndex",Map.of("type","integer"),"instruction",Map.of("type","string")));
   add(toolkit,tools,"draft_confirmed_chapters","生成已确认大纲中所有缺失的正文，不覆盖已有章节",Map.of("instruction",Map.of("type","string")));
+  add(toolkit,tools,"draft_selected_chapters","只生成用户明确指定的空白章节；提供完整章节编号数组，其它章节不动",Map.of("chapterIndexes",Map.of("type","array","items",Map.of("type","integer"),"minItems",1),"instruction",Map.of("type","string")));
   add(toolkit,tools,"rewrite_target_chapter","生成指定章节的修改候选并出确认卡，不直接写入正文；若文章已完成，先出重新打开确认卡，服务端保存指令并在用户确认后继续生成候选。其它章不变",Map.of("chapterIndex",Map.of("type","integer"),"instruction",Map.of("type","string")));
   add(toolkit,tools,"rewrite_chapters","批量改写多个明确章节：提交完整章节编号数组与原始统一修改要求。服务端逐章生成候选并等待用户点击确认或拒绝，不立即批量覆盖正文；文章已完成时先出一次重新打开卡。调用后结束本轮",Map.of("chapterIndexes",Map.of("type","array","items",Map.of("type","integer"),"minItems",1),"instruction",Map.of("type","string")));
   add(toolkit,tools,"request_plan_confirmation","为当前草稿计划立即创建聊天确认卡，等待用户点击；不是确认计划",Map.of());
@@ -48,6 +49,7 @@ public class WorkspaceMainAgent {
     所有写入前先 read_writing_project 读取当前状态。最新工具结果优先于历史文本。
     计划 DRAFT 不能生成正文，应调用 request_plan_confirmation 出卡；聊天文字不能确认。
     只改一章必须 rewrite_target_chapter，不要为改章重新创建计划或在聊天生成替代正文。
+    生成指定多章必须 draft_selected_chapters，准确填写用户指定编号；只有用户明确说全部或剩余全部时才用 draft_confirmed_chapters，不能把“第2章和第3章”扩大为全部章节。
     用户要求修改多章、前N章或全部章节时，必须读取实际目录并用 rewrite_chapters 一次提交完整目标编号与原始修改要求，不循环调用单章工具。收到 batchId 后结束本轮，批量后台逐章出卡，不能声称全部已改好。
     修改工具返回确认卡后立即结束，告知用户点击卡片。重新打开确认和候选写入确认是两道独立门禁，不能再调用其它写入工具、不能要求用户重新发送同一指令。
     完成全文/重新打开也必须出确认卡，绝不能口头确认。资料仅来自用户目标与模型综合，不声称外部检索。

@@ -296,6 +296,26 @@ public class ChapterAgentRuntime {
                     modelRequests.get(),
                     toPlanTrace(lines));
         }
+        try {
+            com.writingagent.v2.domain.ChapterInstructionContract.validateText(userInstruction,outcome.bodyMarkdown,chapterIndex);
+        } catch (com.writingagent.v2.domain.WritingRuleException mismatch) {
+            if (!"REWRITE_REQUIREMENT_NOT_MET".equals(mismatch.code())) throw mismatch;
+            lines.add(new TraceLine(seq.incrementAndGet(),"REWRITE_REQUIREMENT_REPAIR","attempt=1"));
+            // One content correction, no storage retry. Application validates the candidate again.
+            Msg repaired=agent.call(List.of(new UserMessage(
+                    "上次候选未满足用户明确的结尾标记。请仅修正当前第"+chapterIndex+"章，不修改其它章节。"
+                    +"必须严格遵循原始要求："+userInstruction
+                    +"\n通过 generate_response 返回完整 ChapterOutcome；contextMarkEcho="+tool.ctxMark()
+                    +"；chapterIndex="+chapterIndex+"；evidenceBasis=USER_GOAL_AND_MODEL_SYNTHESIS。")),
+                    ChapterOutcome.class,runtimeCtx).block(Duration.ofMinutes(4));
+            repaired=recoverStructuredFromTextIfNeeded(repaired,tool.ctxMark(),chapterIndex,lines,seq);
+            if(repaired==null||!repaired.hasStructuredData())throw mismatch;
+            ChapterOutcome corrected=repaired.getStructuredData(ChapterOutcome.class);
+            if(corrected==null||!tool.ctxMark().equals(corrected.contextMarkEcho)||corrected.chapterIndex!=chapterIndex
+                    ||!ChapterOutcome.SOURCE_BASIS.equals(corrected.evidenceBasis))throw mismatch;
+            com.writingagent.v2.domain.ChapterInstructionContract.validateText(userInstruction,corrected.bodyMarkdown,chapterIndex);
+            outcome=corrected;
+        }
         lines.add(
                 new TraceLine(
                         seq.incrementAndGet(),

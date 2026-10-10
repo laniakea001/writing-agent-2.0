@@ -4,6 +4,11 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {ConfirmationCard} from './ConfirmationCard.mjs';
 const open={proposalId:'p1',projectId:'article-1',type:'COMPLETE_ARTICLE',status:'OPEN',statusLabel:'待你确认',targetLabel:'企业知识助手',allowedDecisions:['APPROVE','REJECT'],effectDescription:'完成后正文只读。',expiresAt:'2099-10-09T07:59:26Z',expectedArticleVersion:30};
+test('literal suffix preview uses document text rather than escaped Markdown source',()=>{
+ const candidate={chapterIndex:4,title:'第四章',instruction:'结尾添加@#003',bodyMarkdown:'正文 @\\#003',contentJson:{type:'doc',content:[{type:'paragraph',content:[{type:'text',text:'正文 @#003'}]}]}};
+ const html=renderToStaticMarkup(React.createElement(ConfirmationCard,{card:{...open,type:'CONFIRM_CHAPTER',candidate},onDecision:()=>{},onLookup:()=>{}}));
+ assert.doesNotMatch(html,/@\\#003/);assert.match(html,/<pre[^>]*>正文 @#003/);
+});
 test('a batch reopen card displays every target rather than an undefined single chapter',()=>{
  const html=renderToStaticMarkup(React.createElement(ConfirmationCard,{card:{...open,type:'REOPEN_ARTICLE',continuation:{batchId:'b1',targets:[{chapterIndex:1},{chapterIndex:2},{chapterIndex:3}],instruction:'全部润色'}},onDecision:()=>{},onLookup:()=>{}}));
  assert.match(html,/第1章、第2章、第3章/);assert.doesNotMatch(html,/undefined/);assert.match(html,/全部润色/);

@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
-@RestControllerAdvice(assignableTypes={DocumentController.class,WritingWorkbenchController.class,StageAiController.class,WorkspaceConversationController.class})
+@RestControllerAdvice(assignableTypes={DocumentController.class,WritingWorkbenchController.class,StageAiController.class,WorkspaceConversationController.class,BatchRewriteController.class})
 public class WritingErrorAdvice {
     @ExceptionHandler(WritingRuleException.class)
     public ResponseEntity<Map<String,Object>> rejected(WritingRuleException e) {return error(e.status(),e.code());}

@@ -2,6 +2,12 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createCommandTransport,ApiError,pendingStorageKey} from '../src/commandTransport.mjs';
 
+test('batch dispatcher refusal is definitive and explains why no task started',()=>{
+  const error=new ApiError(409,'BATCH_DISPATCH_UNAVAILABLE');
+  assert.equal(error.code,'BATCH_DISPATCH_UNAVAILABLE');
+  assert.match(error.message,/任务未受理/);
+});
+
 function fixture(fetchFn){
   const entries=new Map([['wa2-d2-workspace','workspace-1']]);
   const storage={getItem:k=>entries.get(k)??null,setItem:(k,v)=>entries.set(k,v),removeItem:k=>entries.delete(k)};

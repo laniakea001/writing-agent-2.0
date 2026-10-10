@@ -34,26 +34,32 @@ public class StageAiRuns {
     private final com.writingagent.v2.agent.main.WorkspaceMainAgent mainAgent;
     private final BatchRewriteWorkflow batches;
     private final String dispatchProject;
+    private final boolean batchDispatchEnabled;
     private final UUID owner=UUID.randomUUID();
     private final Semaphore slots=new Semaphore(18);
     private final ScheduledExecutorService continuations=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"writing-confirmed-continuations");t.setDaemon(true);return t;});
+    private final ScheduledExecutorService batchDispatcher=Executors.newSingleThreadScheduledExecutor(r->{var t=new Thread(r,"writing-batch-dispatch");t.setDaemon(true);return t;});
     private final ExecutorService workers=new ThreadPoolExecutor(2,2,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(16),r->{var t=new Thread(r,"writing-stage-ai");t.setDaemon(true);return t;},new ThreadPoolExecutor.AbortPolicy());
     public StageAiRuns(WritingCapability writing,AiRunPort port,RunJournal journal,TransactionTemplate tx,
                        PlanAgentRuntime planAgent,ChapterAgentRuntime chapterAgent,ProjectApplicationService projects,
                        WorkspaceConversations conversations,com.writingagent.v2.application.port.ConversationPort messages,
                        com.writingagent.v2.agent.main.WorkspaceMainAgent mainAgent,BatchRewriteWorkflow batches,
-                       @org.springframework.beans.factory.annotation.Value("${writing.batch.dispatch-enabled:false}") boolean batchDispatchEnabled,
+                       @org.springframework.beans.factory.annotation.Value("${writing.batch.dispatch-enabled:true}") boolean batchDispatchEnabled,
                        @org.springframework.beans.factory.annotation.Value("${writing.batch.dispatch-project-id:}") String dispatchProject){
         this.writing=writing;this.port=port;this.journal=journal;this.tx=tx;this.planAgent=planAgent;this.chapterAgent=chapterAgent;this.projects=projects;
         this.conversations=conversations;this.messages=messages;this.mainAgent=mainAgent;
         this.batches=batches;
         this.dispatchProject=dispatchProject;
+        this.batchDispatchEnabled=batchDispatchEnabled;
         continuations.scheduleWithFixedDelay(this::resumeApprovedRewrites,3,3,TimeUnit.SECONDS);
-        if(batchDispatchEnabled)continuations.scheduleWithFixedDelay(this::dispatchBatches,3,3,TimeUnit.SECONDS);
+        if(batchDispatchEnabled)batchDispatcher.scheduleWithFixedDelay(this::dispatchBatches,3,3,TimeUnit.SECONDS);
     }
     public com.writingagent.v2.application.port.BatchRewritePort.Batch submitBatch(UUID project,BatchRewriteWorkflow.Request request){
-        var batch=batches.submit(project,request);batches.activate(batch.batchId());return batches.read(batch.batchId());
+        requireBatchDispatch(project);
+        var batch=batches.submit(project,request);batches.activate(batch.batchId());wakeBatchDispatcher();return batches.read(batch.batchId());
     }
+    private void requireBatchDispatch(UUID project){if(!batchDispatchEnabled||!dispatchProject.isBlank()&&!dispatchProject.equals(project.toString()))throw new WritingRuleException(409,"BATCH_DISPATCH_UNAVAILABLE");}
+    private void wakeBatchDispatcher(){batchDispatcher.execute(this::dispatchBatches);}
     /** Only explicit activated intents; an already claimed item is never executed again. */
     public void dispatchBatches(){
         try{for(var interrupted:batches.activeGenerationOwners())if(batchInScope(interrupted.batchId())&&!ProcessHandle.of(interrupted.pid()).map(ProcessHandle::isAlive).orElse(false))batches.reconcileStopped(interrupted.batchId(),interrupted.pid());
@@ -150,22 +156,24 @@ public class StageAiRuns {
     private void execute(UUID run){
         var e=port.get(run);tx.executeWithoutResult(s->port.running(run,owner));
         publish(run,"RUN_STARTED",Map.of("agentRole","StageAgent","operation",e.request().path("operation").asText()));
+        var savedChapters=new ArrayList<Integer>();
         try {
             if("ASSISTANT_TURN".equals(e.request().path("operation").asText())){executeAssistant(e);return;}
             var results=new ArrayList<Map<String,Object>>();
             if("GENERATE_PLAN".equals(e.request().path("operation").asText()))results.add(generatePlan(e));
-            else if("DRAFT_MISSING_CHAPTERS".equals(e.request().path("operation").asText())) {
+            else if(Set.of("DRAFT_MISSING_CHAPTERS","DRAFT_SELECTED_CHAPTERS").contains(e.request().path("operation").asText())) {
                 var article=map(writing.article(e.projectId()));
-                for(var ch:list(article.get("chapters")))if(ch.get("chapterRevisionId")==null||ch.get("bodyMarkdown")==null||ch.get("bodyMarkdown").toString().isBlank())results.add(generateChapter(e,uuid(ch.get("chapterKey")),false));
-            } else results.add(generateChapter(e,uuid(e.request().path("chapterKey").asText()),Set.of("REWRITE_CHAPTER","REWRITE_CANDIDATE","BATCH_REWRITE_CANDIDATE").contains(e.request().path("operation").asText())));
-            var receipt=JSON.valueToTree(Map.of("outcomeCode","STAGE_COMPLETED","artifacts",results,"resultMayExist",!results.isEmpty()));
+                Set<String> selected=new HashSet<>();e.request().path("chapterKeys").forEach(k->selected.add(k.asText()));
+                for(var ch:list(article.get("chapters")))if((!"DRAFT_SELECTED_CHAPTERS".equals(e.request().path("operation").asText())||selected.contains(ch.get("chapterKey").toString()))&&(ch.get("chapterRevisionId")==null||ch.get("bodyMarkdown")==null||ch.get("bodyMarkdown").toString().isBlank())){results.add(generateChapter(e,uuid(ch.get("chapterKey")),false));savedChapters.add(((Number)ch.get("chapterIndex")).intValue());}
+            } else {var result=generateChapter(e,uuid(e.request().path("chapterKey").asText()),Set.of("REWRITE_CHAPTER","REWRITE_CANDIDATE","BATCH_REWRITE_CANDIDATE").contains(e.request().path("operation").asText()));results.add(result);if(result.get("chapterIndex") instanceof Number n&&"CHAPTER_SAVED".equals(result.get("outcomeCode")))savedChapters.add(n.intValue());}
+            var receipt=JSON.valueToTree(Map.of("outcomeCode","STAGE_COMPLETED","artifacts",results,"savedChapterIndexes",savedChapters,"resultMayExist",!results.isEmpty()));
             tx.executeWithoutResult(s->{journal.settle(run,RunStatus.SUCCEEDED,modelCount(run),"STAGE_COMPLETED",!results.isEmpty());port.finish(e,receipt,true,false);});
         }catch(Exception ex){
             // A child is not a root: tree(child) throws ROOT_RUN_REQUIRED and used to
             // prevent the failure receipt from ever being recorded.
             String code=ex instanceof WritingRuleException r?r.code():ex instanceof com.writingagent.v2.agent.plan.StructuredOutputMissingException?"STRUCTURED_OUTPUT_MISSING":ex instanceof com.writingagent.v2.agent.plan.ModelUnavailableException?"MODEL_UNAVAILABLE":"EXECUTION_FAILED";
             boolean known=ex instanceof WritingRuleException&&!code.contains("UNKNOWN")||ex instanceof com.writingagent.v2.agent.plan.StructuredOutputMissingException||ex instanceof com.writingagent.v2.agent.plan.ModelUnavailableException;
-            fail(e,code,!known,ex.getClass().getSimpleName());
+            fail(e,code,!known,ex.getClass().getSimpleName(),savedChapters);
         }
     }
     private boolean hasArtifact(UUID run){long after=0;while(true){var page=journal.page(run,after,256);if(page.stream().anyMatch(ev->Set.of("ARTIFACT_SAVED","CONFIRMATION_REQUIRED").contains(ev.outputType())))return true;if(page.size()<256)return false;after=page.get(page.size()-1).sequence();}}
@@ -176,8 +184,8 @@ public class StageAiRuns {
         var context=new LinkedHashMap<String,Object>();context.put("workspaceId",e.workspaceId());context.put("projectId",e.projectId());context.put("currentState",e.projectId()==null?null:writing.workbench(e.projectId()));
         String modelAnswer=mainAgent.run(e.runId(),e.conversationId(),write(context),recent,e.request().path("message").asText(),session::invoke);
         // Receipt-based guard, not keyword routing: model prose cannot substitute for a failed write or a pending card.
-        String answer=session.pendingCard!=null?session.pendingCard:!session.failures.isEmpty()?"本次工具操作未完成（"+String.join("、",session.errorCodes)+"）。目标章节未由本次失败操作改写；不会用聊天正文替代保存。请按当前确认卡或错误提示处理。":modelAnswer;
-        tx.executeWithoutResult(s->{journal.guardBusinessCommit(e.runId());UUID id=UUID.randomUUID();messages.insertAssistantMessage(id,e.conversationId(),answer,e.runId());publish(e.runId(),"ASSISTANT_FINAL",Map.of("messageId",id,"body",answer));boolean failed=!session.failures.isEmpty();boolean partial=failed&&journal.tree(e.runId()).stream().anyMatch(r->hasArtifact(r.runId()));String code=failed?"ASSISTANT_TOOL_FAILED":"ASSISTANT_COMPLETED";var receipt=JSON.valueToTree(Map.of("outcomeCode",code,"errorCode",failed?code:"","messageId",id,"body",answer,"resultMayExist",session.uncertain,"hasSavedArtifacts",partial));journal.settle(e.runId(),failed?(session.uncertain?RunStatus.UNKNOWN:RunStatus.FAILED):RunStatus.SUCCEEDED,modelCount(e.runId()),code,session.uncertain);port.finish(e,receipt,!failed,session.uncertain);if(!session.uncertain&&!Objects.equals(e.projectId(),session.target))port.selectProject(e.conversationId(),session.target);});
+        String answer=session.pendingCard!=null?session.pendingCard:!session.failures.isEmpty()?"本次工具操作未全部完成（"+String.join("、",session.errorCodes)+"）。"+(session.savedChapters.isEmpty()?"本轮没有已确认保存的章节回执。":("已保存第"+session.savedChapters.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining("、"))+"章；这些结果会保留，不会重复生成。剩余操作未完成。"))+"不会用聊天正文替代保存。请按当前确认卡或错误提示处理。":modelAnswer;
+        tx.executeWithoutResult(s->{journal.guardBusinessCommit(e.runId());UUID id=UUID.randomUUID();messages.insertAssistantMessage(id,e.conversationId(),answer,e.runId());publish(e.runId(),"ASSISTANT_FINAL",Map.of("messageId",id,"body",answer));boolean failed=!session.failures.isEmpty();boolean artifacts=journal.tree(e.runId()).stream().anyMatch(r->hasArtifact(r.runId()));String code=failed?"ASSISTANT_TOOL_FAILED":"ASSISTANT_COMPLETED";var receipt=JSON.valueToTree(Map.of("outcomeCode",code,"errorCode",failed?code:"","messageId",id,"body",answer,"resultMayExist",session.uncertain||artifacts,"hasSavedArtifacts",artifacts,"savedChapterIndexes",session.savedChapters));journal.settle(e.runId(),failed?(session.uncertain?RunStatus.UNKNOWN:RunStatus.FAILED):RunStatus.SUCCEEDED,modelCount(e.runId()),code,session.uncertain||artifacts);port.finish(e,receipt,!failed,session.uncertain);if(!session.uncertain&&!Objects.equals(e.projectId(),session.target))port.selectProject(e.conversationId(),session.target);});
     }
     /** One trusted target and read snapshot per invocation; never model-supplied versions. */
     private class AssistantTools {
@@ -185,6 +193,7 @@ public class StageAiRuns {
         private final Map<String,Object> completed=new HashMap<>();
         private final Set<String> failures=new HashSet<>();
         private final Set<String> errorCodes=new LinkedHashSet<>();
+        private final Set<Integer> savedChapters=new TreeSet<>();
         private String pendingCard;
         private boolean generationFailed,uncertain;
         AssistantTools(AiRunPort.Execution root){this.root=root;this.target=root.projectId();}
@@ -214,10 +223,14 @@ public class StageAiRuns {
             String childKey="tool|"+root.runId()+"|"+call+"|"+name;
             if(!name.equals("rewrite_chapters"))batches.requireAiWriteAvailable(target);
             if(name.equals("rewrite_chapters")){
+                requireBatchDispatch(target);
                 if(!(input.get("chapterIndexes") instanceof List<?> indexes)||indexes.isEmpty()||!(input.get("instruction") instanceof String instruction)||instruction.isBlank())throw new WritingRuleException(400,"INVALID_BATCH_REQUEST");
                 var chapters=list(map(snapshot.get("article")).get("chapters"));var keys=new ArrayList<UUID>();
                 for(Object value:indexes){if(!(value instanceof Number n)||n.doubleValue()!=n.intValue()||n.intValue()<1)throw new WritingRuleException(400,"INVALID_BATCH_REQUEST");keys.add(chapters.stream().filter(ch->((Number)ch.get("chapterIndex")).intValue()==n.intValue()).map(ch->uuid(ch.get("chapterKey"))).findFirst().orElseThrow(()->new WritingRuleException(404,"CHAPTER_NOT_FOUND")));}
-                var batch=tx.execute(s->{journal.guardBusinessCommit(root.runId());var accepted=batches.submitForAgent(target,new BatchRewriteWorkflow.Request(childKey,keys,instruction),root.conversationId(),root.runId());batches.activate(accepted.batchId());return accepted;});
+                com.writingagent.v2.domain.ChapterInstructionContract.requireTargets(root.request().path("message").asText(),indexes.stream().map(v->((Number)v).intValue()).toList(),true);
+                String original=root.request().path("message").asText();
+                var batch=tx.execute(s->{journal.guardBusinessCommit(root.runId());var accepted=batches.submitForAgent(target,new BatchRewriteWorkflow.Request(childKey,keys,original),root.conversationId(),root.runId());batches.activate(accepted.batchId());return accepted;});
+                wakeBatchDispatcher();
                 if(batch.reopenProposalId()!=null)publish(root.runId(),"CONFIRMATION_REQUIRED",writing.proposal(batch.reopenProposalId()));
                 publish(root.runId(),"BATCH_ACCEPTED",Map.of("batchId",batch.batchId(),"chapterIndexes",batch.items().stream().map(i->i.chapterIndex()).toList(),"status",batch.status().name()));
                 pendingCard=batch.reopenProposalId()!=null?"批量修改任务已登记。请先点击重新打开文章确认卡；之后逐章生成修改候选，由你逐章确认或拒绝。当前正文未改。":"批量修改任务已登记，将按目录顺序逐章生成候选。每一章都需要你确认或拒绝后才继续，当前正文未改。";
@@ -237,15 +250,26 @@ public class StageAiRuns {
                 Map<String,Object> card;
                 if(name.equals("request_article_reopen")&&input.get("chapterIndex") instanceof Number n&&n.intValue()>0){
                     if(n.doubleValue()!=n.intValue()||!(input.get("instruction") instanceof String instruction)||instruction.isBlank())throw new WritingRuleException(400,"REWRITE_INSTRUCTION_REQUIRED");
+                    com.writingagent.v2.domain.ChapterInstructionContract.requireTargets(root.request().path("message").asText(),List.of(n.intValue()),true);
+                    String original=root.request().path("message").asText();
                     UUID chapter=list(article.get("chapters")).stream().filter(ch->((Number)ch.get("chapterIndex")).intValue()==n.intValue()).map(ch->uuid(ch.get("chapterKey"))).findFirst().orElseThrow(()->new WritingRuleException(404,"CHAPTER_NOT_FOUND"));
-                    card=tx.execute(s->{journal.guardBusinessCommit(root.runId());return writing.prepareRewriteReopen(target,childKey,chapter,instruction,root.conversationId(),root.runId());});
+                    card=tx.execute(s->{journal.guardBusinessCommit(root.runId());return writing.prepareRewriteReopen(target,childKey,chapter,original,root.conversationId(),root.runId());});
                 }else card=tx.execute(s->{journal.guardBusinessCommit(root.runId());return writing.prepareAgent(target,new WritingCommands.ProposalPrepare(childKey,type,"AGENT",nullableUuid(project.get("currentPlanRevisionId")),((Number)project.get("projectVersion")).longValue(),article==null?null:((Number)article.get("articleVersion")).longValue()),root.conversationId(),root.runId());});
                 publish(root.runId(),"CONFIRMATION_REQUIRED",card);
                 pendingCard=card.containsKey("continuation")?"文章已完成，请点击「重新打开文章」确认卡。确认后继续生成第"+input.get("chapterIndex")+"章修改候选，再由你确认写入；当前正文未改。":"确认卡已生成，请点击卡片决定；聊天文字不能代替确认。";
                 return card;
             }
-            String op=switch(name){case "propose_writing_plan"->"GENERATE_PLAN";case "draft_confirmed_chapters"->"DRAFT_MISSING_CHAPTERS";case "draft_writing_chapter"->"GENERATE_CHAPTER";case "rewrite_target_chapter"->"REWRITE_CHAPTER";default->throw new WritingRuleException(400,"OPERATION_UNSUPPORTED");};
+            if(name.equals("draft_confirmed_chapters"))com.writingagent.v2.domain.ChapterInstructionContract.requireAllAuthorized(root.request().path("message").asText());
+            if(Set.of("draft_writing_chapter","rewrite_target_chapter").contains(name)&&input.get("chapterIndex") instanceof Number n)com.writingagent.v2.domain.ChapterInstructionContract.requireTargets(root.request().path("message").asText(),List.of(n.intValue()),name.equals("rewrite_target_chapter"));
+            String op=switch(name){case "propose_writing_plan"->"GENERATE_PLAN";case "draft_confirmed_chapters"->"DRAFT_MISSING_CHAPTERS";case "draft_selected_chapters"->"DRAFT_SELECTED_CHAPTERS";case "draft_writing_chapter"->"GENERATE_CHAPTER";case "rewrite_target_chapter"->"REWRITE_CHAPTER";default->throw new WritingRuleException(400,"OPERATION_UNSUPPORTED");};
             var request=JSON.createObjectNode().put("operation",op).put("instruction",String.valueOf(input.getOrDefault("instruction","")));request.set("snapshot",JSON.valueToTree(snapshot));
+            if(op.equals("REWRITE_CHAPTER"))request.put("instruction",root.request().path("message").asText());
+            if(op.equals("DRAFT_SELECTED_CHAPTERS")){
+                if(!(input.get("chapterIndexes") instanceof List<?> indexes)||indexes.isEmpty())throw new WritingRuleException(400,"INVALID_REQUEST");
+                var numbers=new LinkedHashSet<Integer>();for(Object v:indexes){if(!(v instanceof Number n)||n.doubleValue()!=n.intValue()||n.intValue()<1)throw new WritingRuleException(400,"INVALID_REQUEST");numbers.add(n.intValue());}
+                com.writingagent.v2.domain.ChapterInstructionContract.requireTargets(root.request().path("message").asText(),numbers,true);
+                var keys=request.putArray("chapterKeys");for(int n:numbers)keys.add(list(map(snapshot.get("article")).get("chapters")).stream().filter(ch->((Number)ch.get("chapterIndex")).intValue()==n).map(ch->ch.get("chapterKey").toString()).findFirst().orElseThrow(()->new WritingRuleException(404,"CHAPTER_NOT_FOUND")));
+            }
             UUID chapter=null;
             if(op.equals("REWRITE_CHAPTER")||op.equals("GENERATE_CHAPTER")){if(!(input.get("chapterIndex") instanceof Number n)||n.doubleValue()!=n.intValue())throw new WritingRuleException(400,"INVALID_REQUEST");chapter=list(map(snapshot.get("article")).get("chapters")).stream().filter(ch->((Number)ch.get("chapterIndex")).intValue()==n.intValue()).map(ch->uuid(ch.get("chapterKey"))).findFirst().orElseThrow(()->new WritingRuleException(404,"CHAPTER_NOT_FOUND"));request.put("chapterKey",chapter.toString());if(op.equals("REWRITE_CHAPTER")&&request.path("instruction").asText().isBlank())throw new WritingRuleException(400,"REWRITE_INSTRUCTION_REQUIRED");}
             if(op.equals("REWRITE_CHAPTER")&&"COMPLETE".equals(map(snapshot.get("article")).get("status"))){
@@ -257,6 +281,7 @@ public class StageAiRuns {
             if(!child.winner())return child.receipt()==null?Map.of("errorCode","TOOL_EXECUTION_UNKNOWN"):child.receipt();
             tx.executeWithoutResult(s->port.running(child.runId(),owner));publish(root.runId(),"CHILD_RUN_STARTED",Map.of("childRunId",child.runId(),"toolCallId",call));
             execute(child.runId());var settled=port.get(child.runId());snapshot=null;
+            if(settled.receipt()!=null)settled.receipt().path("savedChapterIndexes").forEach(n->savedChapters.add(n.asInt()));
             if(journal.get(child.runId()).status()==RunStatus.SUCCEEDED&&op.equals("REWRITE_CHAPTER"))pendingCard="修改候选已生成，请核对下方目标章节及候选正文后点击确认写入。确认前原章节不变。";
             if(journal.get(child.runId()).status()!=RunStatus.SUCCEEDED){generationFailed=true;uncertain=journal.get(child.runId()).status()==RunStatus.UNKNOWN;throw new WritingRuleException(409,settled.receipt()==null?"TOOL_EXECUTION_UNKNOWN":settled.receipt().path("errorCode").asText("TOOL_FAILED"));}return settled.receipt();
         }
@@ -271,7 +296,7 @@ public class StageAiRuns {
         return tx.execute(s->{journal.guardBusinessCommit(e.runId());var receipt=writing.saveGeneratedPlan(e.projectId(),new WritingCommands.PlanSave("ai|"+e.actionId()+"|plan",expected.path("projectVersion").asLong(),nullableUuid(expected.get("currentPlanRevisionId")),payload));publish(e.runId(),"ARTIFACT_SAVED",receipt);return receipt;});
     }
     private Map<String,Object> generateChapter(AiRunPort.Execution e,UUID key,boolean rewrite){
-        Map<String,Object> state="DRAFT_MISSING_CHAPTERS".equals(e.request().path("operation").asText())?writing.workbench(e.projectId()):JSON.convertValue(e.request().path("snapshot"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
+        Map<String,Object> state=Set.of("DRAFT_MISSING_CHAPTERS","DRAFT_SELECTED_CHAPTERS").contains(e.request().path("operation").asText())?writing.workbench(e.projectId()):JSON.convertValue(e.request().path("snapshot"),new com.fasterxml.jackson.core.type.TypeReference<Map<String,Object>>(){});
         var article=map(state.get("article"));var plan=map(state.get("plan"));
         if(!"CONFIRMED".equals(plan.get("status")))throw new WritingRuleException(409,"PLAN_NOT_CONFIRMED");
         if("COMPLETE".equals(article.get("status")))throw new WritingRuleException(409,"ARTICLE_COMPLETE");
@@ -287,13 +312,16 @@ public class StageAiRuns {
         return tx.execute(s->{journal.guardBusinessCommit(e.runId());
             if("BATCH_REWRITE_CANDIDATE".equals(e.request().path("operation").asText())){var card=batches.prepareCandidate(uuid(e.request().path("batchId").asText()),uuid(e.request().path("itemId").asText()),doc,e.runId());publish(e.runId(),"CONFIRMATION_REQUIRED",card);return card;}
             if(rewrite){var card=writing.prepareChapterCandidate(e.projectId(),"candidate|"+e.actionId(),key,uuid(plan.get("planRevisionId")),nullableUuid(target.get("chapterRevisionId")),((Number)article.get("articleVersion")).longValue(),doc,e.request().path("instruction").asText(),e.conversationId(),e.runId());publish(e.runId(),"CONFIRMATION_REQUIRED",card);return card;}
-            var receipt=writing.saveGeneratedChapter(e.projectId(),key,new WritingCommands.ChapterSave("ai|"+e.actionId()+"|"+key,uuid(plan.get("planRevisionId")),nullableUuid(target.get("chapterRevisionId")),((Number)article.get("articleVersion")).longValue(),doc));publish(e.runId(),"ARTIFACT_SAVED",receipt);return receipt;});
+            var receipt=new LinkedHashMap<String,Object>(writing.saveGeneratedChapter(e.projectId(),key,new WritingCommands.ChapterSave("ai|"+e.actionId()+"|"+key,uuid(plan.get("planRevisionId")),nullableUuid(target.get("chapterRevisionId")),((Number)article.get("articleVersion")).longValue(),doc)));receipt.put("chapterIndex",target.get("chapterIndex"));publish(e.runId(),"ARTIFACT_SAVED",receipt);return receipt;});
     }
     private void fail(AiRunPort.Execution e,String code,boolean uncertain){
         fail(e,code,uncertain,"");
     }
     private void fail(AiRunPort.Execution e,String code,boolean uncertain,String errorClass){
-        tx.executeWithoutResult(s->{var receipt=JSON.valueToTree(Map.of("errorCode",code,"errorClass",errorClass,"resultMayExist",uncertain,"hasSavedArtifacts",hasArtifact(e.runId())));journal.settle(e.runId(),uncertain?RunStatus.UNKNOWN:RunStatus.FAILED,modelCount(e.runId()),code,uncertain);port.finish(e,receipt,false,uncertain);if("BATCH_REWRITE_CANDIDATE".equals(e.request().path("operation").asText()))batches.generationFailed(uuid(e.request().path("batchId").asText()),e.runId(),uncertain);});
+        fail(e,code,uncertain,errorClass,List.of());
+    }
+    private void fail(AiRunPort.Execution e,String code,boolean uncertain,String errorClass,List<Integer> savedChapters){
+        tx.executeWithoutResult(s->{boolean artifacts=hasArtifact(e.runId());var receipt=JSON.valueToTree(Map.of("errorCode",code,"errorClass",errorClass,"resultMayExist",uncertain||artifacts,"hasSavedArtifacts",artifacts,"savedChapterIndexes",savedChapters));journal.settle(e.runId(),uncertain?RunStatus.UNKNOWN:RunStatus.FAILED,modelCount(e.runId()),code,uncertain||artifacts);port.finish(e,receipt,false,uncertain);if("BATCH_REWRITE_CANDIDATE".equals(e.request().path("operation").asText()))batches.generationFailed(uuid(e.request().path("batchId").asText()),e.runId(),uncertain);});
     }
     private int modelCount(UUID run){int count=0;long cursor=0;while(true){var page=journal.page(run,cursor,256);count+=page.stream().filter(e->"MODEL_STARTED".equals(e.outputType())).count();if(page.size()<256)return count;cursor=page.get(page.size()-1).sequence();}}
     private void publish(UUID run,String type,Map<String,Object> payload){journal.append(run,new RunJournal.Draft("stage:"+type+":"+UUID.randomUUID(),type,type,null,null,true,payload));}
@@ -301,5 +329,5 @@ public class StageAiRuns {
     @SuppressWarnings("unchecked") private static List<Map<String,Object>> list(Object value){return (List<Map<String,Object>>)value;}
     private static UUID uuid(Object value){try{return UUID.fromString(value.toString());}catch(Exception ex){throw new WritingRuleException(400,"INVALID_REQUEST");}}
     private static UUID nullableUuid(Object value){return value==null||value instanceof JsonNode n&&n.isNull()?null:uuid(value instanceof JsonNode n?n.asText():value);}
-    @PreDestroy void close(){continuations.shutdown();workers.shutdown();}
+    @PreDestroy void close(){continuations.shutdown();batchDispatcher.shutdown();workers.shutdown();}
 }

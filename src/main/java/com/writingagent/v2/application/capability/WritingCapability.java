@@ -175,6 +175,7 @@ public class WritingCapability {
             if(conversation!=null&&!port.validProposalContext(p.workspaceId(),id,conversation,run))throw error(403,"TARGET_SCOPE_REJECTED");
             var a=requireArticle(id,true);editable(p);confirmed(p,a,plan);same(a.version(),version);var target=findChapter(a,chapter);same(target.revisionId(),prior);
             ChapterDocumentCodec.EncodedDocument encoded;try{encoded=codec.encode(write(content),true);}catch(IllegalArgumentException ex){throw error(400,ex.getMessage());}
+            com.writingagent.v2.domain.ChapterInstructionContract.validateCandidate(instruction,content,target.index());
             var snapshot=JSON.createObjectNode();snapshot.set("manifest",manifest(a));var candidate=snapshot.putObject("candidate");
             candidate.put("chapterKey",chapter.toString()).put("chapterIndex",target.index()).put("title",target.title()).put("instruction",instruction).put("bodyMarkdown",encoded.bodyMarkdown()).put("documentHash",encoded.documentHash());
             candidate.set("expectedChapterRevisionId",JSON.valueToTree(prior));candidate.set("contentJson",parse(encoded.contentJson()));

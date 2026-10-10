@@ -1,7 +1,14 @@
 export const pendingStorageKey='wa2-d2-pending-command';
 
+const errorMessages={
+  BATCH_DISPATCH_UNAVAILABLE:'当前批量调度不可用，任务未受理；请检查服务的批量调度开关与项目范围。',
+  CHAPTER_SCOPE_MISMATCH:'章节范围不一致：请让指令中的章节编号与所选章节一致，不会扩大修改范围。',
+  CHAPTER_SCOPE_REQUIRED:'请明确要处理的章节；只有明确要求全部或剩余全部，才会执行全文批量生成。',
+  REWRITE_REQUIREMENT_NOT_MET:'候选未满足指定的结尾标记，未生成可批准的确认卡，原文保持不变。'
+};
+
 export class ApiError extends Error {
-  constructor(status,code){super(code);this.status=status;this.code=code;}
+  constructor(status,code){super(errorMessages[code]||code);this.status=status;this.code=code;}
 }
 
 /** HTTP boundary only. An uncertain response retains the exact original request. */

@@ -31,6 +31,25 @@ class PartialChapterRunTest {
  @Autowired RunJournal journal; @Autowired AiRunPort runs;
  @MockitoBean WorkspaceMainAgent mainModel; @MockitoBean ChapterAgentRuntime chapterModel;
 
+ @Test void explicitTwoChapterRequestCannotExpandToAllMissingChapters() throws Exception {
+  UUID ws=(UUID)projects.createWorkspace("指定章节范围回归","local-fixture").get("workspaceId");
+  UUID p=(UUID)projects.createProject(ws,"范围不能扩大","六章").get("projectId");
+  UUID conv=(UUID)conversations.create(ws).get("conversationId");conversations.select(conv,p);
+  var payload=JSON.createObjectNode();var outline=payload.putArray("chapters");for(int n=1;n<=6;n++)outline.addObject().put("title","章节"+n);
+  var saved=writing.savePlan(p,new WritingCommands.PlanSave("plan",1L,null,payload));
+  var pr=writing.project(p);var proposal=writing.prepare(p,new WritingCommands.ProposalPrepare("confirm","CONFIRM_PLAN","HTTP",UUID.fromString(saved.get("planRevisionId").toString()),((Number)pr.get("projectVersion")).longValue(),null));
+  writing.decide((UUID)proposal.get("proposalId"),new WritingCommands.ProposalDecision("yes","APPROVE"));
+  when(chapterModel.run(any(),any(),any(),anyInt(),anyString(),anyString(),anyList(),anyList(),anyString(),isNull(),any(),any())).thenAnswer(a->{var o=new ChapterOutcome();o.bodyMarkdown="正文第"+a.getArgument(3)+"章";return new ChapterAgentRuntime.AgentRunResult(o,0,List.of(),"",1,"");});
+  when(mainModel.run(any(),any(),anyString(),anyList(),anyString(),any())).thenAnswer(a->{
+   WorkspaceMainAgent.Tools tools=a.getArgument(5);tools.invoke("read_writing_project","read",Map.of());
+   try{tools.invoke("draft_confirmed_chapters","wrong-all",Map.of("instruction","全部缺失章节"));}catch(WritingRuleException ignored){}
+   return "执行结束";
+  });
+  var root=stages.submitConversation(conv,new StageAiRuns.ConversationTurn("exact-two","生成第2章和第3章"));
+  waitClosed(UUID.fromString(root.get("rootRunId").toString()));
+  assertTrue(chapterSnapshots(p).isEmpty(),"错误的全部生成工具必须在任何章节写入前被拒绝");
+ }
+
  @Test void ninthChapterFailurePreservesEightAndAllowsOnlyMissingChaptersToContinue() throws Exception {
   UUID ws=(UUID)projects.createWorkspace("20章失败回归","local-fixture").get("workspaceId");
   UUID p=(UUID)projects.createProject(ws,"20章隔离文章","回归测试").get("projectId");
@@ -56,6 +75,7 @@ class PartialChapterRunTest {
   var children=journal.tree(id).stream().filter(r->!r.runId().equals(id)).toList();assertEquals(1,children.size());
   assertNotNull(runs.get(children.get(0).runId()).receipt(),"子任务失败也必须有固定回执");
   var before=chapterSnapshots(p);assertEquals(8,before.size());
+  assertTrue(runs.get(id).receipt().path("body").asText().contains("1、2、3、4、5、6、7、8"),"失败答复必须明确已经保存的部分章节");
   failNinth.set(false);
   var next=stages.submitConversation(conv,new StageAiRuns.ConversationTurn("continue","继续剩余章节"));
   UUID nextId=UUID.fromString(next.get("rootRunId").toString());waitClosed(nextId);
